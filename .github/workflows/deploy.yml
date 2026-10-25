@@ -1,0 +1,116 @@
+# Build the site with the bdtree code + this repo's content, then deploy it to Firebase Hosting.
+# The Cloud Functions behind /admin/ (optional) are deployed too when functions.env changed in the push,
+# or on a manual run with "Also deploy the Cloud Functions" ticked (e.g. after a change in bdtree/functions).
+# Until the setup in README.md is done, runs end green with a notice and deploy nothing.
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # manual run, e.g. after a code change in bdtree
+    inputs:
+      functions:
+        description: Also deploy the Cloud Functions
+        type: boolean
+        default: false
+
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  # The bdtree code to build with: point it at your fork if you have one.
+  BDTREE_REPO: batdevis/bdtree
+  BDTREE_REF: main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out bdtree (code)
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.BDTREE_REPO }}
+          ref: ${{ env.BDTREE_REF }}
+          path: bdtree
+
+      - name: Check out content
+        uses: actions/checkout@v5
+        with:
+          path: bdtree/content
+          fetch-depth: 0 # full history, to see what the push changed
+
+      - name: Check setup
+        id: setup
+        working-directory: bdtree/content
+        env:
+          HAS_KEY: ${{ secrets.FIREBASE_SERVICE_ACCOUNT != '' }}
+        run: |
+          if [ -z "$(jq -r '.firebaseProject // ""' band.json)" ] || [ "$HAS_KEY" != true ]; then
+            echo "::notice::Nothing deployed: set firebaseProject in band.json and the FIREBASE_SERVICE_ACCOUNT secret (see README)."
+            ready=false
+          else
+            ready=true
+          fi
+          echo "ready=$ready" | tee -a "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-node@v5
+        if: steps.setup.outputs.ready == 'true'
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: bdtree/package-lock.json
+
+      - name: Install
+        if: steps.setup.outputs.ready == 'true'
+        working-directory: bdtree
+        run: npm ci
+
+      - name: Build and deploy
+        if: steps.setup.outputs.ready == 'true'
+        working-directory: bdtree
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/firebase-sa.json
+        run: |
+          printf '%s' "$FIREBASE_SERVICE_ACCOUNT" > "$GOOGLE_APPLICATION_CREDENTIALS"
+          npm run deploy
+
+      - name: Check whether the functions need a deploy
+        id: functions
+        if: steps.setup.outputs.ready == 'true'
+        working-directory: bdtree/content
+        env:
+          EVENT: ${{ github.event_name }}
+          REQUESTED: ${{ inputs.functions }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          if [ "$EVENT" = workflow_dispatch ]; then
+            deploy="$REQUESTED"
+          elif ! git cat-file -e "$BEFORE^{commit}" 2>/dev/null; then
+            deploy=true # previous head unknown (new branch, force push): play safe
+          elif ! git diff --quiet "$BEFORE" HEAD -- functions.env; then
+            deploy=true
+          else
+            deploy=false
+          fi
+          # The admin editor is optional: skip it until functions.env points at a real repo.
+          if [ "$deploy" = true ]; then
+            case "$(sed -n 's/^GITHUB_REPO=//p' functions.env 2>/dev/null)" in
+              "" | your-github-user/*)
+                echo "::notice::Functions not deployed: set GITHUB_REPO in functions.env first (see README)."
+                deploy=false
+                ;;
+            esac
+          fi
+          echo "deploy=$deploy" | tee -a "$GITHUB_OUTPUT"
+
+      - name: Deploy functions
+        if: steps.functions.outputs.deploy == 'true'
+        working-directory: bdtree
+        env:
+          GOOGLE_APPLICATION_CREDENTIALS: ${{ runner.temp }}/firebase-sa.json
+        run: npm run deploy:functions
