@@ -93,6 +93,11 @@ Gigs are filtered when the site is built, so after a show, redeploy to remove it
 Then adding or removing an editor is just: edit `ADMIN_EMAILS`, commit, push. The workflow redeploys the functions when `functions.env` changes; after a change in `bdtree/functions`, run it by hand with **Also deploy the Cloud Functions** ticked.
 When the token expires, the admin page says so: create a new one and run the `printf … secrets:set` line again with `--force` (which also redeploys the functions).
 
+## 5. Analytics (optional)
+
+Set `"analytics": true` in `band.json` to count visits with Firebase Analytics: pages show a consent banner (texts `consent*` in `i18n.json`), and Analytics loads only for visitors who accept.
+Firebase console → Project settings → Integrations → enable **Google Analytics**, and under General → Your apps register a **Web** app if there is none. The measurement ID then reaches the site by itself, no config to copy. Details in the [bdtree README](https://github.com/batdevis/bdtree#analytics-optional).
+
 ## Using your own fork of bdtree
 
 The workflow builds with `batdevis/bdtree` at `main`. To use a fork or pin a commit, change `BDTREE_REPO` / `BDTREE_REF` at the top of `.github/workflows/deploy.yml`.
